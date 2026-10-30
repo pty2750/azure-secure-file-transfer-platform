@@ -1,4 +1,3 @@
-
 import json
 import unittest
 import urllib.error
@@ -64,6 +63,31 @@ class TestFileTransferAPI(unittest.TestCase):
         self.assertEqual(status, 400)
         self.assertFalse(json.loads(body)["accepted"])
 
+    def test_validate_rejects_unsafe_filenames(self):
+        unsafe_filenames = (
+            "../secret.txt",
+            "..\\..\\secret.txt",
+            "CON.txt",
+            "NUL.csv",
+            "payment..csv",
+            "a" * 252 + ".csv",
+        )
+
+        for filename in unsafe_filenames:
+            with self.subTest(filename=filename):
+                path = "validate?" + urllib.parse.urlencode(
+                    {"filename": filename}
+                )
+
+                status, body = api_request(
+                    "POST", path, b"test content"
+                )
+
+                self.assertEqual(status, 400, body)
+                result = json.loads(body)
+                self.assertFalse(result["accepted"])
+                self.assertIn("Invalid filename.", result["errors"])
+
     def test_upload_requires_filename(self):
         status, body = api_request("POST", "upload", b"test content")
 
@@ -79,6 +103,31 @@ class TestFileTransferAPI(unittest.TestCase):
 
         self.assertEqual(status, 400)
         self.assertFalse(json.loads(body)["accepted"])
+
+    def test_upload_rejects_unsafe_filenames(self):
+        unsafe_filenames = (
+            "../secret.txt",
+            "..\\..\\secret.txt",
+            "CON.txt",
+            "NUL.csv",
+            "payment..csv",
+            "a" * 252 + ".csv",
+        )
+
+        for filename in unsafe_filenames:
+            with self.subTest(filename=filename):
+                path = "upload?" + urllib.parse.urlencode(
+                    {"filename": filename}
+                )
+
+                status, body = api_request(
+                    "POST", path, b"test content"
+                )
+
+                self.assertEqual(status, 400, body)
+                result = json.loads(body)
+                self.assertFalse(result["accepted"])
+                self.assertIn("Invalid filename.", result["errors"])
 
     def test_upload_stores_file_and_rejects_duplicate(self):
         # Use a unique name so the test can be run repeatedly.
