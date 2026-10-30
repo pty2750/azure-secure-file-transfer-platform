@@ -88,6 +88,57 @@ class TestFileTransferAPI(unittest.TestCase):
                 self.assertFalse(result["accepted"])
                 self.assertIn("Invalid filename.", result["errors"])
 
+    def test_validate_rejects_pdf_with_invalid_content(self):
+        path = "validate?" + urllib.parse.urlencode(
+            {"filename": "invoice.pdf"}
+        )
+
+        status, body = api_request(
+            "POST", path, b"This is ordinary text", "application/pdf"
+        )
+
+        result = json.loads(body)
+        self.assertEqual(status, 400, body)
+        self.assertFalse(result["accepted"])
+        self.assertIn(
+            "File content does not match the PDF format.",
+            result["errors"],
+        )
+
+    def test_validate_rejects_csv_with_binary_content(self):
+        path = "validate?" + urllib.parse.urlencode(
+            {"filename": "payment.csv"}
+        )
+
+        status, body = api_request(
+            "POST", path, b"id,amount\x00\x01", "text/csv"
+        )
+
+        result = json.loads(body)
+        self.assertEqual(status, 400, body)
+        self.assertFalse(result["accepted"])
+        self.assertIn(
+            "Text files must not contain null bytes.",
+            result["errors"],
+        )
+
+    def test_validate_rejects_csv_with_invalid_utf8(self):
+        path = "validate?" + urllib.parse.urlencode(
+            {"filename": "payment.csv"}
+        )
+
+        status, body = api_request(
+            "POST", path, b"\xff\xfe\xfa", "text/csv"
+        )
+
+        result = json.loads(body)
+        self.assertEqual(status, 400, body)
+        self.assertFalse(result["accepted"])
+        self.assertIn(
+            "Text files must contain valid UTF-8 content.",
+            result["errors"],
+        )
+
     def test_upload_requires_filename(self):
         status, body = api_request("POST", "upload", b"test content")
 
@@ -128,6 +179,57 @@ class TestFileTransferAPI(unittest.TestCase):
                 result = json.loads(body)
                 self.assertFalse(result["accepted"])
                 self.assertIn("Invalid filename.", result["errors"])
+
+    def test_upload_rejects_pdf_with_invalid_content(self):
+        path = "upload?" + urllib.parse.urlencode(
+            {"filename": "invoice.pdf"}
+        )
+
+        status, body = api_request(
+            "POST", path, b"This is ordinary text", "application/pdf"
+        )
+
+        result = json.loads(body)
+        self.assertEqual(status, 400, body)
+        self.assertFalse(result["accepted"])
+        self.assertIn(
+            "File content does not match the PDF format.",
+            result["errors"],
+        )
+
+    def test_upload_rejects_csv_with_binary_content(self):
+        path = "upload?" + urllib.parse.urlencode(
+            {"filename": "payment.csv"}
+        )
+
+        status, body = api_request(
+            "POST", path, b"id,amount\x00\x01", "text/csv"
+        )
+
+        result = json.loads(body)
+        self.assertEqual(status, 400, body)
+        self.assertFalse(result["accepted"])
+        self.assertIn(
+            "Text files must not contain null bytes.",
+            result["errors"],
+        )
+
+    def test_upload_rejects_csv_with_invalid_utf8(self):
+        path = "upload?" + urllib.parse.urlencode(
+            {"filename": "payment.csv"}
+        )
+
+        status, body = api_request(
+            "POST", path, b"\xff\xfe\xfa", "text/csv"
+        )
+
+        result = json.loads(body)
+        self.assertEqual(status, 400, body)
+        self.assertFalse(result["accepted"])
+        self.assertIn(
+            "Text files must contain valid UTF-8 content.",
+            result["errors"],
+        )
 
     def test_upload_stores_file_and_rejects_duplicate(self):
         # Use a unique name so the test can be run repeatedly.

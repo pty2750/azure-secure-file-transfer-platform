@@ -21,6 +21,8 @@ WINDOWS_RESERVED_NAMES = {
     *(f"LPT{i}" for i in range(1, 10)),
 }
 
+PDF_SIGNATURE = b"%PDF-"
+
 
 def is_valid_filename(filename: str) -> bool:
     """Return whether a filename is safe for storage."""
@@ -54,6 +56,27 @@ def is_valid_filename(filename: str) -> bool:
     return True
 
 
+def validate_file_content(extension: str, content: bytes) -> list:
+    """Validate file content against its allowed extension."""
+
+    errors = []
+
+    if extension == ".pdf":
+        if not content.startswith(PDF_SIGNATURE):
+            errors.append("File content does not match the PDF format.")
+
+    elif extension in {".csv", ".txt"}:
+        if b"\x00" in content:
+            errors.append("Text files must not contain null bytes.")
+        else:
+            try:
+                content.decode("utf-8")
+            except UnicodeDecodeError:
+                errors.append("Text files must contain valid UTF-8 content.")
+
+    return errors
+
+
 def validate_file(filename: str, content: bytes) -> dict:
     """Validate a file and return its processing result."""
 
@@ -65,14 +88,18 @@ def validate_file(filename: str, content: bytes) -> dict:
 
     # Validate the extension.
     suffix = PurePosixPath(filename).suffix.lower() if isinstance(filename, str) else ""
+
     if suffix not in ALLOWED_EXTENSIONS:
         errors.append("File extension is not allowed.")
+    else:
+        # Validate actual content against the extension.
+        errors.extend(validate_file_content(suffix, content))
 
     # Validate file size.
     if len(content) > MAX_FILE_SIZE_BYTES:
         errors.append("File exceeds the configured size limit.")
 
-    # Calculate checksum even for rejected content, if supplied.
+    # Calculate checksum even for rejected content.
     checksum = hashlib.sha256(content).hexdigest()
 
     return {
