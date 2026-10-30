@@ -218,3 +218,12 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Azure Functions local development
+**/.venv/
+**/.venv*/
+**/local.settings.json
+**/.vscode/
+
+# Local Azure emulator data
+.azurite/
