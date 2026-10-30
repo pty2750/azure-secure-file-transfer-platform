@@ -16,6 +16,7 @@ if str(REPO_ROOT) not in sys.path:
 from src.file_processor.validator import validate_file
 from src.audit_logger import write_audit_event
 from src.malware_scanner import scan_file
+from src.authentication import authorize_request
 
 logger = logging.getLogger("secure_file_transfer")
 
@@ -58,6 +59,22 @@ def record_audit(event_type, filename, outcome, details=None):
         )
 
 
+def authentication_response(status_code):
+    """Build a consistent authentication error response."""
+    if status_code == 401:
+        message = "Authentication is required."
+    elif status_code == 403:
+        message = "You do not have permission to perform this action."
+    else:
+        message = "Authentication configuration is invalid."
+
+    return func.HttpResponse(
+        json.dumps({"error": message}),
+        status_code=status_code,
+        mimetype="application/json",
+    )
+
+
 @app.route(
     route="health",
     methods=["GET"],
@@ -85,6 +102,11 @@ def health(req: func.HttpRequest) -> func.HttpResponse:
 )
 def validate_upload(req: func.HttpRequest) -> func.HttpResponse:
     """Validate a file without storing it."""
+    authorized, status_code = authorize_request(req)
+
+    if not authorized:
+        return authentication_response(status_code)
+
     filename = req.params.get("filename", "")
     content = req.get_body()
 
@@ -157,6 +179,11 @@ def validate_upload(req: func.HttpRequest) -> func.HttpResponse:
 )
 def upload_file(req: func.HttpRequest) -> func.HttpResponse:
     """Validate, scan, and store an uploaded file."""
+    authorized, status_code = authorize_request(req)
+
+    if not authorized:
+        return authentication_response(status_code)
+
     filename = req.params.get("filename", "")
 
     if not filename:
@@ -213,7 +240,6 @@ def upload_file(req: func.HttpRequest) -> func.HttpResponse:
         )
 
     # Step 2: Scan the file before uploading it.
-    # Fail closed if the scanner raises an unexpected exception.
     try:
         scan_result = scan_file(content, filename)
         scan_status = scan_result.get("status")
@@ -271,7 +297,7 @@ def upload_file(req: func.HttpRequest) -> func.HttpResponse:
             mimetype="application/json",
         )
 
-    # Store nothing unless the scanner explicitly returns CLEAN.
+    # Only explicitly clean files can be stored.
     if scan_status != "CLEAN":
         logger.error(
             "malware_scan_failed filename=%r status=%r",

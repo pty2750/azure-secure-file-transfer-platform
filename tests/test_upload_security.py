@@ -1,4 +1,4 @@
-
+import os
 import unittest
 from unittest.mock import MagicMock, patch
 
@@ -8,7 +8,17 @@ from function_app import function_app as app_module
 
 
 class TestUploadMalwareProtection(unittest.TestCase):
+
     def setUp(self):
+        # Direct function tests run outside the Functions host.
+        # Explicitly enable development authentication for these tests.
+        self.auth_mode_patch = patch.dict(
+            os.environ,
+            {"AUTH_MODE": "development"},
+        )
+        self.auth_mode_patch.start()
+        self.addCleanup(self.auth_mode_patch.stop)
+
         self.filename = "security_test.csv"
         self.content = b"id,amount\n1,100"
 
@@ -30,6 +40,7 @@ class TestUploadMalwareProtection(unittest.TestCase):
             "get_container_client",
             return_value=self.container,
         )
+
         self.audit_patch = patch.object(
             app_module,
             "record_audit",
