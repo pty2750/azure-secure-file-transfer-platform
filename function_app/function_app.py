@@ -1,18 +1,18 @@
+
 import json
 import logging
-import os
 import sys
 from pathlib import Path
 
 import azure.functions as func
 from azure.core.exceptions import ResourceExistsError
-from azure.storage.blob import BlobServiceClient
 
 # Allow imports from the repository root.
 REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+from src.storage_config import get_blob_service_client
 from src.file_processor.validator import validate_file
 from src.audit_logger import write_audit_event
 from src.malware_scanner import scan_file
@@ -24,21 +24,12 @@ app = func.FunctionApp(
     http_auth_level=func.AuthLevel.FUNCTION
 )
 
-STORAGE_CONNECTION_STRING = os.getenv(
-    "STORAGE_CONNECTION_STRING",
-    "UseDevelopmentStorage=true",
-)
-
-STORAGE_API_VERSION = "2026-06-06"
 CONTAINER_NAME = "accepted-files"
 
 
 def get_container_client():
     """Connect to the configured Blob Storage account."""
-    service = BlobServiceClient.from_connection_string(
-        STORAGE_CONNECTION_STRING,
-        api_version=STORAGE_API_VERSION,
-    )
+    service = get_blob_service_client()
     return service.get_container_client(CONTAINER_NAME)
 
 

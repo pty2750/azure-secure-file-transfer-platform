@@ -6,13 +6,12 @@ import uuid
 from datetime import datetime, timezone
 
 from azure.core.exceptions import ResourceExistsError
-from azure.storage.blob import BlobServiceClient
+
+from src.storage_config import get_blob_service_client
 
 
 logger = logging.getLogger("secure_file_transfer.audit")
 
-STORAGE_CONNECTION_STRING = "UseDevelopmentStorage=true"
-STORAGE_API_VERSION = "2026-06-06"
 AUDIT_CONTAINER_NAME = "audit-logs"
 
 
@@ -36,10 +35,7 @@ def write_audit_event(
         "details": details or {},
     }
 
-    service = BlobServiceClient.from_connection_string(
-        STORAGE_CONNECTION_STRING,
-        api_version=STORAGE_API_VERSION,
-    )
+    service = get_blob_service_client()
 
     try:
         container = service.get_container_client(

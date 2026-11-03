@@ -3,11 +3,10 @@ import json
 import unittest
 import uuid
 
-from azure.storage.blob import BlobServiceClient
 from src.audit_logger import write_audit_event
+from src.storage_config import get_blob_service_client
 
-STORAGE_CONNECTION_STRING = "UseDevelopmentStorage=true"
-STORAGE_API_VERSION = "2026-06-06"
+
 AUDIT_CONTAINER_NAME = "audit-logs"
 
 
@@ -23,10 +22,7 @@ class TestAuditLogger(unittest.TestCase):
             details={"test": True},
         )
 
-        service = BlobServiceClient.from_connection_string(
-            STORAGE_CONNECTION_STRING,
-            api_version=STORAGE_API_VERSION,
-        )
+        service = get_blob_service_client()
 
         try:
             container = service.get_container_client(
@@ -44,12 +40,29 @@ class TestAuditLogger(unittest.TestCase):
                 container.download_blob(blob_name).readall()
             )
 
-            self.assertEqual(stored_event["event_id"], event["event_id"])
-            self.assertEqual(stored_event["event_type"], "automated_test")
-            self.assertEqual(stored_event["filename"], filename)
-            self.assertEqual(stored_event["outcome"], "success")
-            self.assertEqual(stored_event["details"], {"test": True})
-            self.assertTrue(stored_event["timestamp_utc"].endswith("+00:00"))
+            self.assertEqual(
+                stored_event["event_id"],
+                event["event_id"],
+            )
+            self.assertEqual(
+                stored_event["event_type"],
+                "automated_test",
+            )
+            self.assertEqual(
+                stored_event["filename"],
+                filename,
+            )
+            self.assertEqual(
+                stored_event["outcome"],
+                "success",
+            )
+            self.assertEqual(
+                stored_event["details"],
+                {"test": True},
+            )
+            self.assertTrue(
+                stored_event["timestamp_utc"].endswith("+00:00")
+            )
 
         finally:
             service.close()
