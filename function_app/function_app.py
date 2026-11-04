@@ -1,7 +1,9 @@
-
 import json
 import logging
 import sys
+import uuid
+from contextvars import ContextVar
+from functools import wraps
 from pathlib import Path
 
 import azure.functions as func
@@ -17,6 +19,10 @@ from src.file_processor.validator import validate_file
 from src.audit_logger import write_audit_event
 from src.malware_scanner import scan_file
 from src.authentication import authorize_request
+from src.auth_threat_detector import detect_repeated_authentication_failures
+from src.upload_threat_detector import detect_repeated_upload_rejections
+from src.malware_threat_detector import detect_repeated_malware_detections
+from src.abnormal_upload_detector import detect_abnormal_upload_activity, UPLOAD_EVENTS
 
 logger = logging.getLogger("secure_file_transfer")
 
@@ -25,6 +31,47 @@ app = func.FunctionApp(
 )
 
 CONTAINER_NAME = "accepted-files"
+
+# Store the correlation ID separately for each request.
+correlation_id_context = ContextVar(
+    "correlation_id",
+    default=None,
+)
+
+
+def with_correlation_id(handler):
+    """
+    Assign a correlation ID to each request.
+
+    A valid incoming X-Correlation-ID is reused.
+    Otherwise, a new UUID is generated.
+
+    The same ID is added to the response header and
+    made available to audit logging during the request.
+    """
+
+    @wraps(handler)
+    def wrapper(req, *args, **kwargs):
+        incoming_id = req.headers.get("X-Correlation-ID")
+
+        try:
+            correlation_id = str(uuid.UUID(incoming_id))
+        except (ValueError, TypeError, AttributeError):
+            correlation_id = str(uuid.uuid4())
+
+        token = correlation_id_context.set(correlation_id)
+
+        try:
+            response = handler(req, *args, **kwargs)
+
+            response.headers["X-Correlation-ID"] = correlation_id
+
+            return response
+
+        finally:
+            correlation_id_context.reset(token)
+
+    return wrapper
 
 
 def get_container_client():
@@ -35,23 +82,127 @@ def get_container_client():
 
 def record_audit(event_type, filename, outcome, details=None):
     """Record an audit event without hiding the API result."""
+
+    correlation_id = correlation_id_context.get()
+
     try:
-        write_audit_event(
+        event = write_audit_event(
             event_type=event_type,
             filename=filename,
             outcome=outcome,
             details=details,
+            correlation_id=correlation_id,
         )
+        # Detect abnormal upload volume only after an upload outcome is saved.
+        # Detection failures must not change the API response.
+        if event is not None and event_type in UPLOAD_EVENTS:
+            try:
+                detect_abnormal_upload_activity(correlation_id=correlation_id)
+            except Exception:
+                logger.exception(
+                    "abnormal_upload_detection_failed correlation_id=%s",
+                    correlation_id,
+                )
+
+        return event
+
     except Exception:
         logger.exception(
-            "audit_record_failed event_type=%s filename=%r",
+            "audit_record_failed event_type=%s filename=%r "
+            "correlation_id=%s",
             event_type,
             filename,
+            correlation_id,
         )
+        return None
+
+
+
+def record_upload_rejection(filename, details):
+    """Persist an upload rejection, then check for repeated rejections."""
+    event = record_audit("upload_rejected", filename, "rejected", details)
+    if event is not None:
+        try:
+            detect_repeated_upload_rejections(
+                correlation_id=correlation_id_context.get()
+            )
+        except Exception:
+            logger.exception(
+                "upload_threat_detection_failed correlation_id=%s",
+                correlation_id_context.get(),
+            )
+    return event
+
+
+def record_malware_detection(filename, details):
+    """Persist a malware detection, then check for repeated infections."""
+    event = record_audit("malware_detected", filename, "rejected", details)
+    if event is not None:
+        try:
+            detect_repeated_malware_detections(
+                correlation_id=correlation_id_context.get()
+            )
+        except Exception:
+            logger.exception(
+                "malware_threat_detection_failed correlation_id=%s",
+                correlation_id_context.get(),
+            )
+    return event
+
+
+def record_authentication_failure(status_code):
+    """Record authentication and authorization failures."""
+
+    if status_code == 401:
+        event_type = "authentication_failed"
+        outcome = "rejected"
+        reason = "authentication_required_or_invalid_identity"
+
+    elif status_code == 403:
+        event_type = "authorization_denied"
+        outcome = "rejected"
+        reason = "required_role_missing"
+
+    else:
+        event_type = "authentication_configuration_error"
+        outcome = "failed"
+        reason = "unsupported_authentication_configuration"
+
+    logger.warning(
+        "security_authentication_failure event_type=%s "
+        "status_code=%s correlation_id=%s",
+        event_type,
+        status_code,
+        correlation_id_context.get(),
+    )
+
+    event = record_audit(
+        event_type,
+        "(authentication)",
+        outcome,
+        {
+            "http_status": status_code,
+            "reason": reason,
+        },
+    )
+
+    # 503 indicates a configuration problem, not an attempted sign-in.
+    # Only scan after this failure was successfully saved to storage.
+    if status_code in (401, 403) and event is not None:
+        try:
+            detect_repeated_authentication_failures(
+                correlation_id=correlation_id_context.get()
+            )
+        except Exception:
+            logger.exception(
+                "authentication_threat_detection_failed correlation_id=%s",
+                correlation_id_context.get(),
+            )
 
 
 def authentication_response(status_code):
     """Build a consistent authentication error response."""
+
     if status_code == 401:
         message = "Authentication is required."
     elif status_code == 403:
@@ -71,8 +222,10 @@ def authentication_response(status_code):
     methods=["GET"],
     auth_level=func.AuthLevel.ANONYMOUS,
 )
+@with_correlation_id
 def health(req: func.HttpRequest) -> func.HttpResponse:
     """Return the basic service health status."""
+
     response = {
         "service": "secure-file-transfer-platform",
         "status": "healthy",
@@ -91,11 +244,14 @@ def health(req: func.HttpRequest) -> func.HttpResponse:
     methods=["POST"],
     auth_level=func.AuthLevel.ANONYMOUS,
 )
+@with_correlation_id
 def validate_upload(req: func.HttpRequest) -> func.HttpResponse:
     """Validate a file without storing it."""
+
     authorized, status_code = authorize_request(req)
 
     if not authorized:
+        record_authentication_failure(status_code)
         return authentication_response(status_code)
 
     filename = req.params.get("filename", "")
@@ -138,6 +294,7 @@ def validate_upload(req: func.HttpRequest) -> func.HttpResponse:
                 "sha256": result["sha256"],
             },
         )
+
     else:
         logger.info(
             "validation_accepted filename=%r size_bytes=%d sha256=%s",
@@ -168,11 +325,14 @@ def validate_upload(req: func.HttpRequest) -> func.HttpResponse:
     methods=["POST"],
     auth_level=func.AuthLevel.ANONYMOUS,
 )
+@with_correlation_id
 def upload_file(req: func.HttpRequest) -> func.HttpResponse:
     """Validate, scan, and store an uploaded file."""
+
     authorized, status_code = authorize_request(req)
 
     if not authorized:
+        record_authentication_failure(status_code)
         return authentication_response(status_code)
 
     filename = req.params.get("filename", "")
@@ -180,10 +340,8 @@ def upload_file(req: func.HttpRequest) -> func.HttpResponse:
     if not filename:
         logger.warning("upload_rejected reason=missing_filename")
 
-        record_audit(
-            "upload_rejected",
+        record_upload_rejection(
             "(missing)",
-            "rejected",
             {"reason": "missing_filename"},
         )
 
@@ -213,10 +371,8 @@ def upload_file(req: func.HttpRequest) -> func.HttpResponse:
             result["errors"],
         )
 
-        record_audit(
-            "upload_rejected",
+        record_upload_rejection(
             filename,
-            "rejected",
             {
                 "errors": result["errors"],
                 "size_bytes": result["size_bytes"],
@@ -234,6 +390,7 @@ def upload_file(req: func.HttpRequest) -> func.HttpResponse:
     try:
         scan_result = scan_file(content, filename)
         scan_status = scan_result.get("status")
+
     except Exception:
         logger.exception(
             "malware_scan_exception filename=%r",
@@ -267,10 +424,8 @@ def upload_file(req: func.HttpRequest) -> func.HttpResponse:
     if scan_status == "INFECTED":
         logger.warning("malware_detected filename=%r", filename)
 
-        record_audit(
-            "malware_detected",
+        record_malware_detection(
             filename,
-            "rejected",
             {
                 "size_bytes": result["size_bytes"],
                 "sha256": result["sha256"],

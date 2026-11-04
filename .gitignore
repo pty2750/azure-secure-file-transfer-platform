@@ -227,3 +227,10 @@ __marimo__/
 
 # Local Azure emulator data
 .azurite/
+
+# Development backups and temporary files
+*.bak
+*.phase*_backup
+function_app_current.txt
+function_app_root_backup.txt
+*.env
